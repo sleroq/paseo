@@ -1,4 +1,8 @@
+import { writeFile } from "node:fs/promises";
+import path from "node:path";
 import type { Locator, Page } from "@playwright/test";
+import { copyPluginExample } from "../support/helpers/plugin-fixture";
+import { connectNewWorkspaceDaemonClient } from "../support/helpers/new-workspace";
 import { expect, test as baseTest } from "../support/fixtures";
 import {
   awaitToolCall,
@@ -886,7 +890,104 @@ async function completeDraftCreateSubmission(
   await expectCreatedAgentHandoff(page, pending.prompt, pending.userMessage);
 }
 
+async function readClipboard(page: Page): Promise<string> {
+  return page.evaluate(() => navigator.clipboard.readText());
+}
+
 test.describe("Agent message submission", () => {
+  test("keeps a failed agent creation prompt visible, copyable, and retryable", async ({
+    page,
+    context,
+  }, testInfo) => {
+    test.setTimeout(120_000);
+    const workspace = await seedWorkspace({
+      repoPrefix: `creation-failed-prompt-${testInfo.workerIndex}-`,
+    });
+    const client = await connectNewWorkspaceDaemonClient();
+    const plugin = await copyPluginExample("lifecycle-logger");
+    const previous = await client.getDaemonConfig();
+    const errorMessage = "Agent startup blocked for prompt retention regression";
+    const prompt = "Keep my initial prompt when agent startup fails.";
+    try {
+      await writeFile(
+        path.join(plugin.directory, "index.server.ts"),
+        `export default function contribute(server) {
+  let failNextCreation = true;
+  return server.before("agent.create", ({ request }) => {
+    if (failNextCreation) {
+      failNextCreation = false;
+      throw new Error(${JSON.stringify(errorMessage)});
+    }
+    return request;
+  });
+}`,
+      );
+      await client.patchDaemonConfig({ pluginsEnabled: true });
+      await client.installDirectoryPlugin(plugin.directory);
+      await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+      await openWorkspaceDraft(page, workspace.workspaceId);
+      await selectModel(page, "one-minute-stream");
+      await submitMessage(page, prompt);
+
+      await expectComposerDraft(page, prompt);
+      await expectComposerEditable(page);
+      await expect(page.getByText(errorMessage, { exact: false })).toHaveCount(1);
+      await expect(page.getByText(errorMessage, { exact: false })).toBeVisible();
+      await expect(page.getByTestId(/^workspace-tab-agent_/)).toHaveCount(0);
+      const userMessage = page.getByTestId("user-message").filter({ hasText: prompt });
+      const screenshotPath = testInfo.outputPath("failed-creation.png");
+      await page.screenshot({ path: screenshotPath });
+      await testInfo.attach("failed-creation-state", {
+        path: screenshotPath,
+        contentType: "image/png",
+      });
+      await testInfo.attach("failed-creation-prompt", {
+        body: JSON.stringify({
+          composer: await composerLocator(page).inputValue(),
+          error: await page.getByText(errorMessage, { exact: false }).allTextContents(),
+          userMessageCount: await userMessage.count(),
+        }),
+        contentType: "application/json",
+      });
+      await expect(userMessage).toHaveCount(1);
+      await expect(userMessage).toBeVisible();
+      await expect(userMessage).toHaveAttribute("aria-busy", "false");
+      await expect(page.getByTestId("turn-working-indicator")).toHaveCount(0);
+      await userMessage.getByText(prompt, { exact: true }).hover();
+      await expect(userMessage.getByTestId("user-message-trailing-row")).toHaveCSS("opacity", "1");
+      await userMessage.getByRole("button", { name: "Copy message", exact: true }).click();
+      await expect.poll(() => readClipboard(page)).toBe(prompt);
+
+      await page.setViewportSize({ width: 390, height: 844 });
+      await expect(userMessage).toBeInViewport();
+      await expect(
+        userMessage.getByRole("button", { name: "Copy message", exact: true }),
+      ).toBeVisible();
+      await expectComposerDraft(page, prompt);
+      await expectComposerEditable(page);
+      await expect(page.getByText(errorMessage, { exact: false })).toHaveCount(1);
+      await page.screenshot({ path: testInfo.outputPath("failed-creation-compact.png") });
+      await page.setViewportSize({ width: 1280, height: 720 });
+
+      const retryPrompt = `${prompt} Edited before retry.`;
+      await fillComposerDraft(page, retryPrompt);
+      await expectComposerDraft(page, retryPrompt);
+      await composerLocator(page).press("Enter");
+      await expectAgentReadyToInterrupt(page);
+      await expect(page.getByTestId(/^workspace-tab-agent_/).first()).toBeVisible();
+      await expect(page.getByTestId("user-message")).toHaveCount(1);
+      await expect(page.getByTestId("user-message")).toContainText(retryPrompt);
+      await expect(page.getByText(prompt, { exact: true })).toHaveCount(0);
+      await expect(page.getByText(errorMessage, { exact: false })).toHaveCount(0);
+    } finally {
+      await page.screenshot({ path: testInfo.outputPath("creation-recovery.png") });
+      await client.removePlugin("lifecycle-logger");
+      await client.patchDaemonConfig({ pluginsEnabled: previous.config.pluginsEnabled });
+      await plugin.cleanup();
+      await client.close();
+      await workspace.cleanup();
+    }
+  });
   test("settles an immediately interrupted first prompt", async ({ page }, testInfo) => {
     const workspace = await seedWorkspace({
       repoPrefix: `submission-immediate-interrupt-${testInfo.workerIndex}-`,

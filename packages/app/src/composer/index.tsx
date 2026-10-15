@@ -928,6 +928,7 @@ interface ComposerProps {
   /** When true, waits for pasted forge links to resolve before enabling submit. */
   waitForForgeAutoAttachOnSubmit?: boolean;
   submitBehavior?: "clear" | "preserve-and-lock";
+  submitErrorOwner?: "composer" | "parent";
   /** When true, blurs the input immediately when submitting. */
   blurOnSubmit?: boolean;
   textSource: ComposerTextSource;
@@ -1232,6 +1233,7 @@ function ComposerContentImpl({
   isSubmitLoading = false,
   waitForForgeAutoAttachOnSubmit = false,
   submitBehavior = "clear",
+  submitErrorOwner,
   blurOnSubmit = false,
   textSource,
   onChangeText,
@@ -1647,6 +1649,7 @@ function ComposerContentImpl({
         allowEmptySubmit,
         forceSend,
         submitBehavior,
+        submitErrorOwner,
         isAgentRunning,
         // Parent-managed submits are still valid submit paths even when the
         // transport is disconnected, because the parent decides the failure mode.
@@ -1688,6 +1691,7 @@ function ComposerContentImpl({
       setSelectedAttachments,
       replaceUserInput,
       submitBehavior,
+      submitErrorOwner,
       submitMessage,
       t,
     ],

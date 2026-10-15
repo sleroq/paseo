@@ -8,6 +8,7 @@ export interface AgentInputSubmitActionInput<TAttachment> {
   hasExternalContent?: boolean;
   allowEmptySubmit?: boolean;
   submitBehavior?: "clear" | "preserve-and-lock";
+  submitErrorOwner?: "composer" | "parent";
   forceSend?: boolean;
   isAgentRunning: boolean;
   canSubmit: boolean;
@@ -70,11 +71,13 @@ export async function submitAgentInput<TAttachment>(
       input.setUserInput(trimmedMessage);
       input.setAttachments(attachments);
     }
-    input.setSendError(
-      error instanceof Error
-        ? error.message
-        : (input.failedToSendMessage ?? i18n.t("composer.errors.failedToSend")),
-    );
+    if (input.submitErrorOwner !== "parent") {
+      let message = input.failedToSendMessage ?? i18n.t("composer.errors.failedToSend");
+      if (error instanceof Error) {
+        message = error.message;
+      }
+      input.setSendError(message);
+    }
     input.setIsProcessing(false);
     return "failed";
   }

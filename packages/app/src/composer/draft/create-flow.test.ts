@@ -163,6 +163,7 @@ describe("useDraftAgentCreateFlow", () => {
         }),
       { initialProps: { provider: "codex" } as { provider: string | null } },
     );
+
     let submission!: Promise<unknown>;
     const captureError = (error: unknown) => error;
     await act(async () => {
@@ -172,13 +173,15 @@ describe("useDraftAgentCreateFlow", () => {
     });
     rerender({ provider: null });
     expect(result.current.draftAgent).toEqual({ provider: "codex" });
+
     await act(async () => {
       failRequest(new Error("Provider unavailable"));
       await submission;
     });
     expect(result.current.isSubmitting).toBe(false);
-    expect(result.current.draftAgent).toBeNull();
+    expect(result.current.draftAgent).toEqual({ provider: "codex" });
     expect(result.current.formErrorMessage).toBe("Provider unavailable");
+
     rerender({ provider: "claude" });
     await act(async () => {
       await result.current.handleCreateFromInput({

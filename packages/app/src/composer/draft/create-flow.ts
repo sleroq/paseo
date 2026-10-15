@@ -10,6 +10,7 @@ import { handoffCreatedAgentMessageSubmission } from "@/composer/submission/writ
 import { useSessionStore } from "@/stores/session-store";
 import {
   createUserMessage,
+  generateMessageId,
   type StreamItem,
   type UserMessageImageAttachment,
 } from "@/types/stream";
@@ -28,7 +29,8 @@ interface CreateAttempt {
 
 type DraftAgentMachineState<TDraftAgent> =
   | { tag: "draft"; errorMessage: string }
-  | { tag: "creating"; attempt: CreateAttempt; draftAgent: TDraftAgent };
+  | { tag: "creating"; attempt: CreateAttempt; draftAgent: TDraftAgent }
+  | { tag: "failed"; attempt: CreateAttempt; draftAgent: TDraftAgent; errorMessage: string };
 
 type DraftAgentMachineEvent<TDraftAgent> =
   | { type: "DRAFT_SET_ERROR"; message: string }
@@ -45,7 +47,7 @@ function reducer<TDraftAgent>(
 ): DraftAgentMachineState<TDraftAgent> {
   switch (event.type) {
     case "DRAFT_SET_ERROR": {
-      if (state.tag !== "draft") {
+      if (state.tag === "creating") {
         return state;
       }
       return { ...state, errorMessage: event.message };
@@ -57,7 +59,7 @@ function reducer<TDraftAgent>(
       if (state.tag !== "creating") {
         return state;
       }
-      return { tag: "draft", errorMessage: event.message };
+      return { ...state, tag: "failed", errorMessage: event.message };
     }
     default:
       return assertNever(event);
@@ -139,7 +141,15 @@ export function useDraftAgentCreateFlow<TDraftAgent, TCreateResult>({
   // arrive, and observe the original request's failure through shared state.
   const machine = useMemo<DraftAgentMachineState<TDraftAgent>>(() => {
     if (pending?.lifecycle === "abandoned") {
-      return { tag: "draft", errorMessage: pending.errorMessage ?? "" };
+      let failedMachine = localMachine;
+      if (failedMachine.tag === "draft" && initialAttempt) {
+        failedMachine = prepareCreateAttempt(initialAttempt, buildDraftAgent);
+      }
+      const errorMessage = pending.errorMessage ?? "";
+      if (failedMachine.tag === "draft") {
+        return { tag: "draft", errorMessage };
+      }
+      return { ...failedMachine, tag: "failed", errorMessage };
     }
     if (pending?.lifecycle === "active" && localMachine.tag === "draft" && initialAttempt) {
       return prepareCreateAttempt(initialAttempt, buildDraftAgent);
@@ -150,11 +160,14 @@ export function useDraftAgentCreateFlow<TDraftAgent, TCreateResult>({
   const setPendingCreateAttempt = useCreateFlowStore((state) => state.setPending);
   const updatePendingAgentId = useCreateFlowStore((state) => state.updateAgentId);
   const markPendingCreateLifecycle = useCreateFlowStore((state) => state.markLifecycle);
-  const formErrorMessage = machine.tag === "draft" ? machine.errorMessage : "";
+  let formErrorMessage = "";
+  if (machine.tag !== "creating") {
+    formErrorMessage = machine.errorMessage;
+  }
   const isSubmitting = machine.tag === "creating";
 
   const submittedStreamItems = useMemo<StreamItem[]>(() => {
-    if (machine.tag !== "creating") {
+    if (machine.tag === "draft") {
       return EMPTY_STREAM_ITEMS;
     }
 
@@ -185,7 +198,10 @@ export function useDraftAgentCreateFlow<TDraftAgent, TCreateResult>({
     ];
   }, [machine]);
 
-  const draftAgent = machine.tag === "creating" ? machine.draftAgent : null;
+  let draftAgent: TDraftAgent | null = null;
+  if (machine.tag !== "draft") {
+    draftAgent = machine.draftAgent;
+  }
   const startCreateAttempt = useCallback(
     (attempt: CreateAttempt) => {
       const prepared = prepareCreateAttempt(attempt, buildDraftAgent);
@@ -313,7 +329,7 @@ export function useDraftAgentCreateFlow<TDraftAgent, TCreateResult>({
       }
 
       const attempt: CreateAttempt = {
-        clientMessageId: `${draftId}:initial-message`,
+        clientMessageId: generateMessageId(),
         text: trimmedPrompt,
         timestamp: new Date(),
         ...(images.length > 0 ? { images } : {}),

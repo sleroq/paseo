@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
-import { Keyboard, ScrollView, StyleSheet as RNStyleSheet, Text, View } from "react-native";
+import { Keyboard, StyleSheet as RNStyleSheet, Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
 import { StyleSheet } from "react-native-unistyles";
 import { ComposerDock } from "@/composer/dock";
@@ -176,7 +176,7 @@ async function submitDraftCreateRequest(input: {
   const attachmentsArray = Array.isArray(attachments) ? attachments : undefined;
   const imagesData = await encodeImages(images);
   const options = {
-    idempotencyKey: input.draftId,
+    idempotencyKey: attempt.clientMessageId,
     config,
     workspaceId,
     initialPrompt: text,
@@ -362,7 +362,10 @@ export function WorkspaceDraftAgentTab({
   });
   const pendingCreateAttempt = useCreateFlowStore((state) => {
     const pending = state.pendingByDraftId[draftId] ?? null;
-    return pending?.serverId === serverId && pending.lifecycle === "active" ? pending : null;
+    if (pending?.serverId === serverId && pending.lifecycle !== "sent") {
+      return pending;
+    }
+    return null;
   });
   const consumePendingAutoSubmit = useWorkspaceDraftSubmissionStore(
     (state) => state.consumePending,
@@ -602,7 +605,7 @@ export function WorkspaceDraftAgentTab({
   );
   const dockContent = (
     <View style={styles.contentContainer}>
-      {isSubmitting && draftAgent ? (
+      {draftAgent ? (
         <View style={styles.streamContainer}>
           <AgentStreamView
             agentId={tabId}
@@ -615,17 +618,14 @@ export function WorkspaceDraftAgentTab({
             onOpenWorkspaceFile={onOpenWorkspaceFile}
           />
         </View>
-      ) : (
-        <ScrollView style={styles.scrollView} contentContainerStyle={styles.configScrollContent}>
-          <View style={styles.configSection}>
-            {formErrorMessage ? (
-              <View style={styles.errorContainer}>
-                <Text style={styles.errorText}>{formErrorMessage}</Text>
-              </View>
-            ) : null}
+      ) : null}
+      {formErrorMessage ? (
+        <View style={styles.errorSection}>
+          <View style={styles.errorContainer}>
+            <Text style={styles.errorText}>{formErrorMessage}</Text>
           </View>
-        </ScrollView>
-      )}
+        </View>
+      ) : null}
     </View>
   );
 
@@ -647,6 +647,7 @@ export function WorkspaceDraftAgentTab({
             workspaceId={workspaceId}
             isPaneFocused={isPaneFocused}
             onSubmitMessage={handleCreateFromInput}
+            submitErrorOwner="parent"
             isSubmitLoading={isSubmitting}
             blurOnSubmit={true}
             textSource={draftInput.textSource}
@@ -693,16 +694,10 @@ const styles = StyleSheet.create((theme) => ({
   streamContainer: {
     flex: 1,
   },
-  scrollView: {
-    flex: 1,
-  },
-  configScrollContent: {
+  errorSection: {
     paddingHorizontal: theme.spacing[4],
     paddingTop: theme.spacing[4],
     paddingBottom: theme.spacing[6],
-  },
-  configSection: {
-    gap: theme.spacing[3],
   },
   importPillRow: {
     width: "100%",
