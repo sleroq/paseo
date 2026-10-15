@@ -32,6 +32,117 @@ function workspace(id: string, projectId = "project"): WorkspaceDescriptorPayloa
   };
 }
 
+interface CreationSnapshotCase {
+  name: string;
+  live: WorkspaceDescriptorPayload;
+  stale: WorkspaceDescriptorPayload;
+}
+
+it.each<CreationSnapshotCase>([
+  {
+    name: "pin and title changes",
+    live: { ...workspace("new"), pinnedAt: "2026-10-15T12:00:00.000Z", title: "Renamed" },
+    stale: workspace("new"),
+  },
+  {
+    name: "a manual unpin",
+    live: { ...workspace("new"), pinnedAt: null },
+    stale: { ...workspace("new"), pinnedAt: "2026-10-15T12:00:00.000Z" },
+  },
+  {
+    name: "an immediately failed initial prompt",
+    live: {
+      ...workspace("new"),
+      status: "failed",
+      statusEnteredAt: "2026-10-15T12:00:01.000Z",
+    },
+    stale: {
+      ...workspace("new"),
+      status: "running",
+      statusEnteredAt: "2026-10-15T12:00:02.000Z",
+    },
+  },
+])("preserves $name when a late creation snapshot arrives", ({ name, live, stale }) => {
+  const serverId = `creation-snapshot-${name}`;
+  const store = useSessionStore.getState();
+  store.initializeSession(serverId, null);
+  const replica = new WorkspaceDirectoryReplica(serverId);
+
+  try {
+    replica.applyDelta({ kind: "upsert", workspace: live });
+    const current = useSessionStore.getState().sessions[serverId].workspaces.get(live.id);
+
+    expect(replica.acceptWorkspaces([normalizeWorkspaceDescriptor(stale)])).toEqual([]);
+    expect(replica.snapshot().workspaces.get(live.id)).toBe(current);
+    expect(useSessionStore.getState().sessions[serverId].workspaces.get(live.id)).toBe(current);
+  } finally {
+    store.clearSession(serverId);
+  }
+});
+
+it("seeds missing rows without overwriting existing rows in the same batch", () => {
+  const serverId = "creation-snapshot-mixed-batch";
+  const store = useSessionStore.getState();
+  store.initializeSession(serverId, null);
+  const replica = new WorkspaceDirectoryReplica(serverId);
+  const live = { ...workspace("existing"), title: "Live title" };
+  const missing = normalizeWorkspaceDescriptor(workspace("missing"));
+
+  try {
+    replica.applyDelta({ kind: "upsert", workspace: live });
+
+    expect(
+      replica.acceptWorkspaces([normalizeWorkspaceDescriptor(workspace("existing")), missing]),
+    ).toEqual([{ kind: "workspace", type: "upsert", id: missing.id, value: missing }]);
+    expect(useSessionStore.getState().sessions[serverId].workspaces.get(live.id)?.title).toBe(
+      "Live title",
+    );
+    expect(useSessionStore.getState().sessions[serverId].workspaces.get(missing.id)).toBe(missing);
+  } finally {
+    store.clearSession(serverId);
+  }
+});
+
+it("applies directory updates after seeding a creation snapshot", () => {
+  const serverId = "directory-after-creation-snapshot";
+  const store = useSessionStore.getState();
+  store.initializeSession(serverId, null);
+  const replica = new WorkspaceDirectoryReplica(serverId);
+  const initial = workspace("new");
+  const live = { ...initial, pinnedAt: "2026-10-15T12:00:00.000Z", title: "Renamed" };
+
+  try {
+    replica.acceptWorkspaces([normalizeWorkspaceDescriptor(initial)]);
+    replica.applyDelta({ kind: "upsert", workspace: live });
+
+    expect(useSessionStore.getState().sessions[serverId].workspaces.get(initial.id)).toEqual(
+      normalizeWorkspaceDescriptor(live),
+    );
+  } finally {
+    store.clearSession(serverId);
+  }
+});
+
+it("can restore a missing row after an optimistic removal", () => {
+  const serverId = "creation-snapshot-archive-rollback";
+  const store = useSessionStore.getState();
+  store.initializeSession(serverId, null);
+  const replica = new WorkspaceDirectoryReplica(serverId);
+  const initial = normalizeWorkspaceDescriptor(workspace("new"));
+
+  try {
+    replica.acceptWorkspaces([initial]);
+    replica.removeWorkspaceSnapshot(initial.id);
+
+    expect(replica.acceptWorkspaces([initial])).toEqual([
+      { kind: "workspace", type: "upsert", id: initial.id, value: initial },
+    ]);
+    expect(useSessionStore.getState().sessions[serverId].workspaces.get(initial.id)).toBe(initial);
+  } finally {
+    store.clearSession(serverId);
+  }
+});
+
 it("commits workspace and project-parent state with filtered removals", () => {
   const serverId = "workspace-replica";
   const store = useSessionStore.getState();

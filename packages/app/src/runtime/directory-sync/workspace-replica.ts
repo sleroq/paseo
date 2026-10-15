@@ -82,7 +82,14 @@ export class WorkspaceDirectoryReplica {
   }
 
   acceptWorkspaces(workspaces: readonly WorkspaceDescriptor[]): DirectoryReplicaMutation[] {
-    return workspaces.flatMap((workspace) => this.upsertWorkspace(workspace));
+    // Creation snapshots can predate directory updates. Only seed missing rows;
+    // the directory stream owns updates to rows already in the replica.
+    return workspaces.flatMap((workspace) => {
+      if (this.workspaces.has(workspace.id)) {
+        return [];
+      }
+      return this.upsertWorkspace(workspace);
+    });
   }
 
   acceptProject(project: ProjectDescriptor): DirectoryReplicaMutation[] {
